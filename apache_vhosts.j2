@@ -1,0 +1,51 @@
+#### vhost for phpinfo
+
+<VirtualHost *:{{apache_port}}>
+    ServerName apache.{{domain_name}}
+    ServerAlias www.apache.{{domain_name}}
+
+    DocumentRoot {{website_dir}}/apache.{{domain_name}}
+
+    <Directory {{website_dir}}/apache.{{domain_name}}>
+        Options -Indexes +FollowSymLinks +MultiViews
+        AllowOverride All
+        Require all granted
+
+        <FilesMatch "\.(htm|html|css|js|php)$">
+            AddDefaultCharset UTF-8
+            DefaultLanguage en-US
+        </FilesMatch>
+
+    </Directory>
+
+    ErrorLog /var/log/apache2/apache.{{domain_name}}-error.log
+    CustomLog /var/log/apache2/apache.{{domain_name}}.log combined
+    LogLevel warn
+
+</VirtualHost>
+
+#### vhost for phpBB
+
+<VirtualHost *:{{apache_port}}>
+    ServerName forum.{{domain_name}}
+    ServerAlias www.forum.{{domain_name}}
+
+    DocumentRoot {{website_dir}}/forum.{{domain_name}}
+
+    <Directory {{website_dir}}/forum.{{domain_name}}>
+        Options -Indexes +FollowSymLinks +MultiViews
+        AllowOverride All
+        Require all granted
+
+        <FilesMatch "\.(htm|html|css|js|php)$">
+            AddDefaultCharset UTF-8
+            DefaultLanguage en-US
+        </FilesMatch>
+
+    </Directory>
+
+    ErrorLog /var/log/apache2/forum.{{domain_name}}-error.log
+    CustomLog /var/log/apache2/forum.{{domain_name}}.log combined
+    LogLevel warn
+
+</VirtualHost>

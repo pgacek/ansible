@@ -1,0 +1,20 @@
+server {
+    listen 80;
+    server_name apache.{{domain_name}} www.apache.{{domain_name}};
+
+    location / {
+        proxy_pass http://{{ansible_default_ipv4.address}}:8080;
+	proxy_set_header Host $host;
+    }
+}
+
+
+server {
+    listen 80;
+    server_name forum.{{domain_name}} www.forum.{{domain_name}};
+
+    location / {
+        proxy_pass http://{{ansible_default_ipv4.address}}:8080;
+        proxy_set_header Host $host;
+    }
+}

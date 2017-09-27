@@ -1,0 +1,372 @@
+---
+- hosts: [all]
+  remote_user: vagrant
+  become: yes
+  become_method: sudo
+
+### Globally defined variables ###
+
+  vars:
+    apache_port: 8080 
+    website_dir: /var/www/html
+    apache_path: /etc/apache2
+    vhost1: apache
+    vhost2: forum
+    domain_name: piotr.gacek
+    bind_path: /etc/bind
+    mysql_root_password: password
+    nginx_path: /etc/nginx
+
+### Tasks to do ###
+
+  tasks:
+
+  - name: test connection
+    ping:
+
+#### ssh for vagrant  ####
+  - name: global | copy ssh-key from host machine
+    authorized_key: user=vagrant state=present
+     key="{{ lookup('file', lookup('env','HOME') + '/.ssh/id_rsa.pub') }}"
+
+
+  ### Add this repo to allow ansible start apt module ###
+
+  - name: apt | add repo
+    lineinfile: path=/etc/apt/sources.list line='deb http://ftp.de.debian.org/debian jessie main' state=present
+  
+  ### Restore server dns configuration
+  ### in case dns won't work correctly
+  ### if whole playbook works fine - always expect 2 changes in the result:
+  ###      1. this below
+  ###      2. change that value to localhost
+  
+  #- name: global | restore dns
+  #  lineinfile: path=/etc/resolv.conf regexp="^nameserver" line="nameserver {{ansible_default_ipv4.gateway}}"
+
+
+
+
+  ### Add some repos ###
+
+  - name: global | configure repositories
+    apt_repository: repo={{item}} state=present
+    with_items:
+    - deb http://ftp.agh.edu.pl/debian/ jessie main contrib non-free
+    - deb-src http://ftp.agh.edu.pl/debian/ jessie main contrib non-free
+    - deb http://security.debian.org/ jessie/updates main contrib  non-free
+    - deb-src http://security.debian.org/ jessie/updates main contrib non-free
+    - deb http://ftp.agh.edu.pl/debian/ jessie-updates main contrib
+    - deb-src http://ftp.agh.edu.pl/debian/ jessie-updates main contrib
+    - deb http://packages.dotdeb.org jessie all
+
+  - name: global | add apt key on Debian
+    apt_key: url=https://www.dotdeb.org/dotdeb.gpg state=present
+
+
+  ### Uncomment when you want to update cache each time run playbook
+  ### results change status every run
+
+  ##################################
+  # - name: global | update cache  #
+  #   apt: update_cache=true       #
+  ##################################
+
+#### BIND CONFIGURATION ####
+
+  ### Install bind9 ### 
+
+  - name: dns | install bind9
+    apt: name=bind9 update_cache=yes state=latest
+    notify:
+     - restart bind
+
+  - name: dns | configure bind 
+    blockinfile:
+     marker: "### {mark} I put it here! ###"
+     path: "{{bind_path}}/named.conf.local"
+     insertafter: "^};"
+     block: |
+      zone "{{domain_name}}" {
+        type master;
+        file "/etc/bind/{{domain_name}}.zone";
+      };
+    register: bind_config_out
+    notify:
+       - reload bind
+
+  - name: dns | configure zone 
+    template: src=zone_config.j2 dest={{bind_path}}/{{domain_name}}.zone
+     owner=root 
+     group=bind 
+     mode=0644
+    register: bind_zone_out
+    notify:
+       - reload bind
+
+  - name: dns | disable dnssec validation
+    lineinfile: path={{bind_path}}/named.conf.options regexp="dnssec" line="dnssec-validation no;"
+    notify:
+       - reload bind
+
+  # - name: dns | configure forwarders
+  #   blockinfile: 
+  #     marker: "### {mark} I put it here! ###"
+  #     path: "{{bind_path}}/named.conf.options"
+  #     insertafter: "dnssec-validation no;"
+  #     block: |
+  #       forwarders {
+  #           {{ ansible_default_ipv4.gateway }};
+  #       };
+  #   notify:
+  #      - reload bind
+
+  - name: dns | set dns
+    lineinfile: path=/etc/resolv.conf regexp="^nameserver" line="nameserver 127.0.0.1" 
+
+  - name: dns | restart bind
+    service: name=bind9 state=restarted
+    when: bind_config_out.changed or bind_zone_out.changed
+
+  ### Install webservers - first install nginx in case of Debian bug #754407. ###
+
+  - name: nginx | install
+    apt: name=nginx state=latest
+    notify:
+      - restart nginx
+
+  - name: apache2 | install LAMP
+    apt: name={{item}} state=latest
+    with_items:
+    - apache2
+    - php7.0-fpm
+    - php7.0
+    - php7.0-cgi
+    - php7.0-cli
+    - php7.0-common
+    - php7.0-curl
+    - php7.0-gd
+    - php7.0-intl
+    - php7.0-json
+    - php7.0-mysql
+    - php7.0-xml
+    - libapache2-mod-fastcgi
+    - lynx
+    notify:
+      - restart apache2
+
+  - name: mysql | install LAMP
+    apt: name={{item}} state=latest
+    with_items:
+    - mariadb-server
+    - python-mysqldb
+    register: mysql_install_out
+    notify:
+      - restart mysql
+    
+    
+   
+##### APACHE CONFIGURATION #####
+
+  ### Change default apache listen port ###
+
+  - name: apache | listen on port 8080
+    lineinfile: path={{apache_path}}/ports.conf regexp="^Listen" line="Listen {{apache_port}}" state=present
+    notify:
+    - restart apache2
+
+  - name: apache | default virtualhost on port 8080
+    lineinfile: path={{apache_path}}/sites-available/000-default.conf regexp="^<VirtualHost" line="<VirtualHost *:{{apache_port}}>" state=present
+    notify:
+    - restart apache2
+
+  ### Install vhost and webdirectory ###
+
+  - name: apache | install webdir
+    file: path={{website_dir}}/apache.{{domain_name}} state=directory mode=0755 owner=root group=www-data
+    notify:
+      - reload apache2
+
+  - name: apache | install vhost 
+    template: src=apache_vhosts.j2 dest={{apache_path}}/sites-enabled/adminotaur.{{domain_name}}.conf
+     owner=root 
+     group=www-data 
+     mode=0644
+    notify:
+      - reload apache2
+
+  - name: apache | add php.info to webdir
+    copy: content="<?php\n \tphpinfo();\n?>\n"
+     dest="{{website_dir}}/apache.{{domain_name}}/index.php"
+     force=no
+     owner=root
+     group=root
+     mode=0644
+    notify:
+      - restart apache2
+
+  ### Apache php configuration ###
+
+  - name: apache | enable module 
+    apache2_module: name={{item}} state=present
+    with_items:
+      - actions
+      - fastcgi
+      - alias
+    notify:
+     - restart apache2
+
+  ### Configure php-fpm to use unix socket ###
+
+  - name: apache | configure php-fpm
+    blockinfile: 
+      marker: "### {mark} I put it here! ###"
+      path: "{{apache_path}}/mods-available/fastcgi.conf"
+      insertafter: "FastCgiIpcDir /var/lib/apache2/fastcgi"
+      block: |
+        AddHandler php7-fcgi .php
+        Action php7-fcgi /php7-fcgi virtual
+        Alias /php7-fcgi /usr/lib/cgi-bin/php7.0
+        FastCgiExternalServer /usr/lib/cgi-bin/php7.0 -socket /var/run/php/php7.0-fpm.sock -pass-header Authorization
+    notify:
+      - restart apache2
+      - restart php-fpm
+
+
+  - name: apache | add access to directory
+    blockinfile: 
+      marker: "### {mark} I put it here! ###"
+      path: "{{apache_path}}/apache2.conf"
+      insertafter: "</Directory"
+      block: |
+       <Directory /usr/lib/cgi-bin>
+          Require all granted
+       </Directory>
+    notify:
+      - restart apache2
+
+
+  - name: forum | install webdir
+    file: path={{website_dir}}/forum.{{domain_name}} state=directory mode="u=rwX,g=rwX,o=" owner=root group=www-data
+    notify:
+      - restart apache2
+
+  - name: forum | prepare to install forum 
+    file: src={{website_dir}}/forum.{{domain_name}}/.
+     dest={{website_dir}}/forum.{{domain_name}}/phpBB3
+     state=link
+     owner=root
+     group=www-data
+    register: link_out
+
+
+  - name: mysql | credentials config
+    copy: content="[client]
+          password={{mysql_root_password}}"
+     dest="~/.my.cnf"
+     force=no
+     owner=root
+     group=root
+     mode=0640
+
+# mysql_secure_installation
+ 
+  - name: mysql | delete anonymous MySQL server user for {{ ansible_hostname }}
+    action: mysql_user user="" host="{{ ansible_hostname }}" state="absent"
+    when: mysql_install_out.changed
+
+  - name: mysql | delete anonymous MySQL server user for localhost
+    action: mysql_user user="" state="absent"
+    when: mysql_install_out.changed
+
+  - name: mysql | remove the MySQL test database
+    action: mysql_db db=test state=absent
+    when: mysql_install_out.changed
+   
+ 
+  - name: mysql | change root user password on first run
+    mysql_user: login_user=root
+              login_password=''
+              name=root
+              password={{ mysql_root_password }}
+              priv=*.*:ALL,GRANT
+              host={{ item }}
+    with_items:
+      - "{{ ansible_hostname }}"
+      - 127.0.0.1
+      - ::1
+      - localhost
+    when: mysql_install_out.changed
+
+
+## create DB
+
+  - name: forum | create DB
+    mysql_db:
+     name: phpBB3
+     state: present
+     login_password: "{{mysql_root_password}}"
+    when: mysql_install_out.changed
+
+# Copy database dump file to remote host and restore it 
+  - name: forum | copy database dump file
+    copy:
+     src: phpBB3.dump
+     dest: /tmp
+    when: mysql_install_out.changed
+
+  - name: forum | restore database
+    mysql_db:
+     name: phpBB3
+     state: import
+     login_password: "{{mysql_root_password}}"
+     target: /tmp/phpBB3.dump
+    when: mysql_install_out.changed
+
+  - name: forum | download and extract sources
+    unarchive:
+     src=phpBB_php.tar
+     dest={{website_dir}}/forum.{{domain_name}}
+    when: mysql_install_out.changed
+    notify:
+    - restart apache2
+
+#### NGINX CONFIGURATION ####
+  ### Set nginx as reverse proxy ###
+
+  - name: nginx | install vhosts
+    template: src=nginx_vhosts.j2 dest={{nginx_path}}/sites-enabled/adminotaur.{{domain_name}}
+     owner=root 
+     group=www-data 
+     mode=0644
+    notify:
+      - restart nginx
+
+
+  ### Handlers to trigger ###
+
+  handlers:
+    - name: restart bind
+      service: name=bind9 state=restarted enabled=yes
+
+    - name: reload bind
+      service: name=bind9 state=restarted enabled=yes
+
+    - name: restart nginx
+      service: name=nginx state=restarted enabled=yes
+
+    - name: restart apache2
+      service: name=apache2 state=restarted enabled=yes
+
+    - name: reload nginx
+      service: name=nginx state=reloaded
+
+    - name: reload apache2
+      service: name=apache2 state=reloaded
+
+    - name: restart php-fpm
+      service: name=php7.0-fpm state=restarted
+
+    - name: restart mysql
+      service: name=mysql state=restarted
+

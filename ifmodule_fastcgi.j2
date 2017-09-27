@@ -1,0 +1,10 @@
+<IfModule mod_fastcgi.c>
+  AddHandler fastcgi-script .fcgi
+  #FastCgiWrapper /usr/lib/apache2/suexec
+  FastCgiIpcDir /var/lib/apache2/fastcgi
+
+  AddHandler php7-fcgi .php
+  Action php7-fcgi /php7-fcgi virtual
+  Alias /php7-fcgi /usr/lib/cgi-bin/php7.0
+  FastCgiExternalServer /usr/lib/cgi-bin/php7.0 -socket /var/run/php/php7.0-fpm.sock -pass-header Authorization
+</IfModule>
